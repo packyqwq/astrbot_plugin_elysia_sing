@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.bak*
+logo_512.png
+.DS_Store
+*.log
