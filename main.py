@@ -56,7 +56,7 @@ def _clean_notify_text(text: str) -> str:
     return cleaned.strip()
 
 
-@register("astrbot_plugin_elysia_sing", "packy", "爱莉唱歌：真唱歌不是朗读，自动定位副歌并裁剪发送语音", "1.0.2")
+@register("astrbot_plugin_elysia_sing", "packy", "爱莉唱歌：真唱歌不是朗读，自动定位副歌并裁剪发送语音", "2.0.0")
 class ElysiaSing(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -93,13 +93,13 @@ class ElysiaSing(Star):
     @staticmethod
     def _failure_reason(exc):
         reason = str(exc)
-        if "豆包拒绝演唱" in reason:
-            return "豆包曲库里没有这首歌"
+        if "engine_refused_to_sing" in reason:
+            return "这首歌没能唱出来，可能曲库里没有"
         if "音频过短" in reason:
-            return "豆包可能拒唱了"
+            return "没唱完整，音频太短无法使用"
         if "重合比例过低" in reason:
-            return "豆包唱的不是这首歌，可能是听错了歌名"
-        return "技术故障"
+            return "唱出来的不是这首歌，可能歌名没被认出来"
+        return "遇到了技术问题，这次没能唱出来"
 
     async def _notify_main_agent(self, event, song, outcome):
         if not bool(self.config.get("notify_llm_on_done", True)):
@@ -190,7 +190,11 @@ class ElysiaSing(Star):
                 "audio_sent": True,
                 "duration_seconds": round(float(trim.get("out_dur") or details.get("duration") or 0), 2),
                 "location_method": method,
-                "location_meaning": "精准命中了指定片段" if method == "lyrics_match" else "从开头截取",
+                "location_meaning": (
+                    "精准命中了用户指定的片段"
+                    if method == "lyrics_match"
+                    else "唱的是这首歌的其他段落，不是用户指定的那段，音频已经发出"
+                ),
             })
         except asyncio.TimeoutError:
             logger.warning("[elysia_sing] 等待并发槽位超时 job=%s user=%s", job_id, user_id)
@@ -217,14 +221,16 @@ class ElysiaSing(Star):
     @filter.llm_tool(name="elysia_sing")
     async def elysia_sing(self, event: AstrMessageEvent, song: str, request: str = "",
                           part: str = "", hint_lyrics: str = "") -> str:
-        """让爱莉唱一小段歌,结果以语音消息发送。工具会立即返回,语音消息随后自动推送——快则很快,慢则可能需要一段时间,取决于歌曲长度和网络,所以回复用户时简短说一句“稍等一下”就好,不要强调具体等待时间,也不要说“已经发给你了”。每次唱出的长度约 20-25 秒,不是整首歌。同一用户有冷却时间,短时间内重复点歌会被拒绝。有些歌曲可能不在豆包曲库中而返回失败原因,这时应自然地告诉用户换一首。
+        """让爱莉唱一小段歌,结果以语音消息发送。工具会立即返回,语音消息随后自动推送——快则很快,慢则可能需要一段时间,取决于歌曲长度和网络,所以回复用户时简短说一句“稍等一下”就好,不要强调具体等待时间,也不要说“已经发给你了”。每次唱出的长度约 20-25 秒,不是整首歌。同一用户有冷却时间,短时间内重复点歌会被拒绝。有些歌曲可能唱不出来而返回失败原因,这时应自然地告诉用户换一首。
 
         Args:
             song(string): 用户指定的歌名;用户没指定具体歌曲时,请自己挑一首适合当下气氛的,不要总选同一首。
-            request(string): 对豆包说的完整指令,简短,以歌名为核心,使用“请唱{歌名}”这类模板形式;留空则自动用“请唱{song}”。
+            request(string): 演唱指令,简短,以歌名为核心,使用“请唱{歌名}”这类模板形式;留空则自动用“请唱{song}”。
             part(string): 想要的片段位置,如“副歌”“高潮”或“开头”;留空则唱开头并裁剪到约 25 秒。
             hint_lyrics(string): 当用户要求副歌、高潮或某几句等特定片段时,应先用联网搜索查这首歌该片段的歌词原文,把几句歌词填入此参数;工具会用它在唱出的音频里做文本匹配以精准定位。搜不到才留空,此时会退化成从开头裁剪约 25 秒。
         """
+        logger.info("elysia_sing tool entry: song=%r request=%r part=%r hint_lyrics_len=%d hint_lyrics_preview=%r",
+                    song, request, part, len(hint_lyrics or ""), (hint_lyrics or "")[:20])
         if not bool(self.config.get("enabled", True)):
             return "系统提示：唱歌功能当前未启用，无法执行。请告知用户这个功能暂时不可用。"
         song = (song or "").strip()

@@ -1,8 +1,8 @@
 name: astrbot_plugin_elysia_sing
 display_name: 实时语音唱歌
-desc: 让角色真唱歌(不是朗读)。基于火山豆包实时语音,自动识别歌词定位副歌片段,裁剪后以语音消息发送。
+desc: 让角色真唱歌(不是朗读)。基于实时语音大模型,自动识别歌词定位副歌片段,裁剪后以语音消息发送。
 short_desc: 让角色真唱歌,自动定位副歌并裁剪发送
-version: 1.0.2
+version: 2.0.0
 author: packy
 repo: https://github.com/packyqwq/astrbot_plugin_elysia_sing
 astrbot_version: ">=4.16,<5"

@@ -14,7 +14,7 @@ from _sing_core import execute_pipeline, best_lyric_start, validate_output
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--live", action="store_true", help="实际调用 MiniMax、豆包和 ASR")
+    parser.add_argument("--live", action="store_true", help="实际调用火山引擎的 TTS、实时对话和 ASR")
     parser.add_argument("config", nargs="?")
     parser.add_argument("song", nargs="?")
     parser.add_argument("--lyrics", default="")

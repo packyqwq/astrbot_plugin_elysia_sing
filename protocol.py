@@ -145,62 +145,51 @@ def unpack(frame: bytes) -> ParsedFrame:
            WebSocket 是消息边界天然对齐的,一条 ws message = 一帧,不需要自己拆包)
     """
     pf = ParsedFrame()
-    if len(frame) < 4:
-        raise ValueError(f"frame too short: {len(frame)} bytes")
+    max_payload = 10 * 1024 * 1024
+    max_decompressed = 50 * 1024 * 1024
+    if len(frame) < 4 or frame[0] >> 4 != 1 or (frame[0] & 0x0F) != 1:
+        raise ValueError("invalid protocol frame header")
 
-    byte0, byte1, byte2, byte3 = frame[0], frame[1], frame[2], frame[3]
-    header_size_words = byte0 & 0x0F
-    header_len = header_size_words * 4 if header_size_words else 4
-
+    byte1, byte2 = frame[1], frame[2]
     pf.message_type = byte1 >> 4
     pf.flags = byte1 & 0x0F
     pf.serialization = byte2 >> 4
     pf.compression = byte2 & 0x0F
+    offset = 4
 
-    offset = header_len
+    def read_u32(label):
+        nonlocal offset
+        if offset + 4 > len(frame):
+            raise ValueError(f"truncated {label}")
+        value = struct.unpack(">I", frame[offset:offset + 4])[0]
+        offset += 4
+        return value
 
-    # message_type == 0xF (error): header 后先读 4字节 error_code
     if pf.message_type == MSG_TYPE_ERROR:
-        pf.error_code = struct.unpack(">I", frame[offset:offset + 4])[0]
-        offset += 4
-
-    # flags & 0x4 (WITH_EVENT) -> 读 event(4B)
+        pf.error_code = read_u32("error code")
     if pf.flags & FLAG_WITH_EVENT:
-        pf.event = struct.unpack(">I", frame[offset:offset + 4])[0]
-        offset += 4
+        pf.event = read_u32("event")
+        if pf.event not in (EVENT_START_CONNECTION, EVENT_FINISH_CONNECTION):
+            sid_len = read_u32("session id size")
+            if sid_len > max_payload or offset + sid_len > len(frame):
+                raise ValueError("invalid session id size")
+            pf.session_id = frame[offset:offset + sid_len].decode("utf-8", errors="replace")
+            offset += sid_len
 
-        # ConnectionStarted(50)/ConnectionFailed(51) 可能带 connect_id
-        if pf.event in (EVENT_CONNECTION_STARTED, EVENT_CONNECTION_FAILED):
-            # 尝试性读取: 有些实现在这里带 connect_id_size+connect_id, 有些没有
-            # 用剩余长度做保护性判断, 若不确定则跳过 (由调用方通过 json 里的字段兜底)
-            pass
-
-        # Session 事件必须带 session_id_size(4B) + session_id
-        if pf.event in (EVENT_SESSION_STARTED, EVENT_SESSION_FINISHED, EVENT_SESSION_FAILED,
-                        EVENT_ASR_INFO, EVENT_ASR_RESPONSE, EVENT_ASR_ENDED,
-                        EVENT_TTS_SENTENCE_START, EVENT_TTS_SENTENCE_END, EVENT_TTS_RESPONSE,
-                        EVENT_TTS_ENDED, EVENT_CHAT_RESPONSE, EVENT_CHAT_ENDED,
-                        EVENT_USAGE_RESPONSE, EVENT_DIALOG_COMMON_ERROR):
-            if offset + 4 <= len(frame):
-                sid_len = struct.unpack(">I", frame[offset:offset + 4])[0]
-                offset += 4
-                if sid_len > 0 and offset + sid_len <= len(frame):
-                    pf.session_id = frame[offset:offset + sid_len].decode("utf-8", errors="replace")
-                    offset += sid_len
-
-    # payload_size(4B) + payload
-    if offset + 4 <= len(frame):
-        payload_size = struct.unpack(">I", frame[offset:offset + 4])[0]
-        offset += 4
-        pf.payload = frame[offset:offset + payload_size]
-    else:
-        pf.payload = frame[offset:]
-
+    payload_size = read_u32("payload size")
+    if payload_size > max_payload or payload_size != len(frame) - offset:
+        raise ValueError("invalid payload size")
+    pf.payload = frame[offset:]
     if pf.compression == 0x1 and pf.payload:
+        import io
         try:
-            pf.payload = gzip.decompress(pf.payload)
-        except Exception:
-            pass  # 解压失败保留原始 payload, 由调用方处理
+            with gzip.GzipFile(fileobj=io.BytesIO(pf.payload)) as stream:
+                decoded = stream.read(max_decompressed + 1)
+            if len(decoded) > max_decompressed:
+                raise ValueError("decompressed payload too large")
+            pf.payload = decoded
+        except (OSError, EOFError) as exc:
+            raise ValueError("invalid compressed payload") from exc
 
     if pf.serialization == SERIALIZATION_JSON and pf.payload:
         try:
